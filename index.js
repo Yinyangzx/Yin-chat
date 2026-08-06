@@ -76,6 +76,14 @@ app.get("/api/chat/messages", (req, res) => {
     });
 });
 
+// ─── POST /api/heartbeat ─────────────────────────────────────────────────────
+app.post("/api/heartbeat", (req, res) => {
+    const { playerId } = req.body || {};
+    if (!playerId) return res.json({ ok: false, error: "missing playerId" });
+    onlineSeen[String(playerId)] = Math.floor(Date.now() / 1000);
+    res.json({ ok: true });
+});
+
 // ─── POST /api/translate ─────────────────────────────────────────────────────
 app.post("/api/translate", async (req, res) => {
     const { text, to } = req.body || {};
