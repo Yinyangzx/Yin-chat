@@ -1,0 +1,115 @@
+const express = require("express");
+const fetch   = require("node-fetch");
+
+const app  = express();
+const PORT = process.env.PORT || 3000;
+
+// ─── STORAGE ────────────────────────────────────────────────────────────────
+const MAX_MESSAGES = 50;
+const ONLINE_TTL   = 300; // seconds — 5 minutes
+
+let messages      = [];
+let msgIdCounter  = 0;
+let onlineSeen    = {}; // playerId → unix timestamp last seen
+
+function cleanOnline() {
+    const cutoff = Math.floor(Date.now() / 1000) - ONLINE_TTL;
+    for (const id in onlineSeen) {
+        if (onlineSeen[id] < cutoff) delete onlineSeen[id];
+    }
+}
+
+function getOnlineCount() {
+    cleanOnline();
+    return Object.keys(onlineSeen).length;
+}
+
+// ─── MIDDLEWARE ──────────────────────────────────────────────────────────────
+app.use(express.json());
+
+app.use((req, res, next) => {
+    res.setHeader("Access-Control-Allow-Origin",  "*");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    if (req.method === "OPTIONS") return res.sendStatus(204);
+    next();
+});
+
+// ─── POST /api/chat/send ─────────────────────────────────────────────────────
+app.post("/api/chat/send", (req, res) => {
+    const { playerName, playerId, message } = req.body || {};
+
+    if (!playerName || !playerId || !message) {
+        return res.json({ success: false, error: "missing fields" });
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+
+    // Track online
+    onlineSeen[String(playerId)] = now;
+
+    // Store message
+    msgIdCounter++;
+    messages.push({
+        id:         msgIdCounter,
+        playerName: String(playerName),
+        playerId:   String(playerId),
+        message:    String(message),
+        timestamp:  now,
+    });
+
+    // Keep only last 50
+    if (messages.length > MAX_MESSAGES) {
+        messages = messages.slice(messages.length - MAX_MESSAGES);
+    }
+
+    console.log(`[ChatGlobal] New message from ${playerName} (${playerId}): ${message}`);
+
+    res.json({ success: true });
+});
+
+// ─── GET /api/chat/messages ──────────────────────────────────────────────────
+app.get("/api/chat/messages", (req, res) => {
+    res.json({
+        messages:    messages, // already oldest → newest
+        onlineCount: getOnlineCount(),
+    });
+});
+
+// ─── POST /api/translate ─────────────────────────────────────────────────────
+app.post("/api/translate", async (req, res) => {
+    const { text, to } = req.body || {};
+
+    if (!text || !to) {
+        return res.json({ success: false, error: "missing fields" });
+    }
+
+    try {
+        const encoded  = encodeURIComponent(text);
+        const url      = `https://api.mymemory.translated.net/get?q=${encoded}&langpair=auto|${to}`;
+        const response = await fetch(url);
+        const data     = await response.json();
+
+        const translated = data?.responseData?.translatedText;
+        const from       = data?.matches?.[0]?.source_segment_language || "auto";
+
+        if (!translated) {
+            return res.json({ success: false, error: "empty translation" });
+        }
+
+        res.json({
+            success:    true,
+            translated: translated,
+            from:       from,
+            to:         to,
+        });
+    } catch (err) {
+        console.warn("[ChatGlobal] Translation error:", err.message);
+        res.json({ success: false, error: err.message });
+    }
+});
+
+// ─── START ───────────────────────────────────────────────────────────────────
+app.listen(PORT, () => {
+    console.log(`[ChatGlobal] Backend running on port ${PORT}`);
+});
