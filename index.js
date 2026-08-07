@@ -11,6 +11,7 @@ const ONLINE_TTL   = 300; // seconds — 5 minutes
 let messages      = [];
 let msgIdCounter  = 0;
 let onlineSeen    = {}; // playerId → unix timestamp last seen
+let profiles      = {}; // playerId → { playerName, description, imageId }
 
 function cleanOnline() {
     const cutoff = Math.floor(Date.now() / 1000) - ONLINE_TTL;
@@ -115,6 +116,35 @@ app.post("/api/translate", async (req, res) => {
         console.warn("[ChatGlobal] Translation error:", err.message);
         res.json({ success: false, error: err.message });
     }
+});
+
+// ─── POST /api/profile/save ──────────────────────────────────────────────────
+app.post("/api/profile/save", (req, res) => {
+    const { playerId, playerName, description, imageId } = req.body || {};
+
+    if (!playerId) {
+        return res.json({ success: false, error: "missing playerId" });
+    }
+
+    profiles[String(playerId)] = {
+        playerName:  String(playerName  || ""),
+        description: String(description || ""),
+        imageId:     String(imageId     || ""),
+    };
+
+    console.log(`[Profile] Saved profile for ${playerId}`);
+    res.json({ success: true });
+});
+
+// ─── GET /api/profile/:playerId ──────────────────────────────────────────────
+app.get("/api/profile/:playerId", (req, res) => {
+    const profile = profiles[String(req.params.playerId)];
+
+    if (!profile) {
+        return res.json({ success: false, error: "profile not found" });
+    }
+
+    res.json({ success: true, profile });
 });
 
 // ─── START ───────────────────────────────────────────────────────────────────
