@@ -39,7 +39,7 @@ app.use((req, res, next) => {
 
 // ─── POST /api/chat/send ─────────────────────────────────────────────────────
 app.post("/api/chat/send", (req, res) => {
-    const { playerName, playerId, message } = req.body || {};
+    const { playerName, playerId, message, lang } = req.body || {};
 
     if (!playerName || !playerId || !message) {
         return res.json({ success: false, error: "missing fields" });
@@ -57,6 +57,7 @@ app.post("/api/chat/send", (req, res) => {
         playerName: String(playerName),
         playerId:   String(playerId),
         message:    String(message),
+        lang:       String(lang || "es"),
         timestamp:  now,
     });
 
@@ -87,34 +88,13 @@ app.post("/api/heartbeat", (req, res) => {
 });
 
 // ─── POST /api/translate ─────────────────────────────────────────────────────
-// Uses LibreTranslate public API with auto language detection.
-// Results are cached by "msgId:targetLang" to avoid duplicate calls.
+// Uses LibreTranslate public API. Language pair comes from the client —
+// no auto-detection needed. Results cached by "msgId:targetLang".
 // Falls back to a secondary server if the primary fails.
 const LIBRE_SERVERS = [
     "https://libretranslate.com",
     "https://translate.argosopentech.com",
 ];
-
-async function detectLanguage(text) {
-    for (const server of LIBRE_SERVERS) {
-        try {
-            const response = await fetch(`${server}/detect`, {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify({ q: text }),
-                signal:  AbortSignal.timeout(5000),
-            });
-            const data = await response.json();
-            if (Array.isArray(data) && data.length > 0) {
-                console.log(`[Translate] detect via ${server}`);
-                return data[0].language;
-            }
-        } catch (err) {
-            console.warn(`[Translate] detect failed on ${server}: ${err.message} — trying next`);
-        }
-    }
-    return null;
-}
 
 async function translateText(text, from, to) {
     for (const server of LIBRE_SERVERS) {
@@ -127,63 +107,54 @@ async function translateText(text, from, to) {
             });
             const data = await response.json();
             if (data?.translatedText) {
-                console.log(`[Translate] translate via ${server}`);
+                console.log(`[Translate] OK via ${server} (${from}→${to})`);
                 return data.translatedText;
             }
         } catch (err) {
-            console.warn(`[Translate] translate failed on ${server}: ${err.message} — trying next`);
+            console.warn(`[Translate] ${server} failed: ${err.message} — trying next`);
         }
     }
     return null;
 }
 
 app.post("/api/translate", async (req, res) => {
-    const { text, to, msgId } = req.body || {};
+    const { text, from, to, msgId } = req.body || {};
 
-    if (!text || !to) {
+    if (!text || !from || !to) {
         return res.json({ success: false, error: "missing fields" });
     }
 
-    // Only cache when msgId is provided
+    // Same language — nothing to do
+    if (from === to) {
+        return res.json({ success: false, error: "already in target language", from, to });
+    }
+
+    // Cache check
     const cacheKey = msgId ? `${msgId}:${to}` : null;
     if (cacheKey && translateCache[cacheKey]) {
         console.log(`[Translate] Cache hit for ${cacheKey}`);
         return res.json({
             success:    true,
             translated: translateCache[cacheKey].translated,
-            from:       translateCache[cacheKey].from,
+            from:       from,
             to:         to,
             cached:     true,
         });
     }
 
     try {
-        // Step 1: detect source language
-        const from = await detectLanguage(text);
-
-        if (!from) {
-            return res.json({ success: false, error: "could not detect language" });
-        }
-
-        // If already in target language, no need to translate
-        if (from === to) {
-            return res.json({ success: false, error: "already in target language", from, to });
-        }
-
-        // Step 2: translate
         const translated = await translateText(text, from, to);
 
         if (!translated) {
-            return res.json({ success: false, error: "empty translation" });
+            return res.json({ success: false, error: "translation failed on all servers" });
         }
 
-        // Step 3: cache the result
         if (cacheKey) {
             translateCache[cacheKey] = { translated, from };
-            console.log(`[Translate] Cached ${cacheKey} (${from} → ${to})`);
+            console.log(`[Translate] Cached ${cacheKey} (${from}→${to})`);
         }
 
-        console.log(`[Translate] ${from} → ${to}: "${text.slice(0, 40)}" → "${translated.slice(0, 40)}"`);
+        console.log(`[Translate] ${from}→${to}: "${text.slice(0, 40)}" → "${translated.slice(0, 40)}"`);
 
         res.json({
             success:    true,
