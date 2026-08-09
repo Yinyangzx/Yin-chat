@@ -8,11 +8,10 @@ const PORT = process.env.PORT || 3000;
 const MAX_MESSAGES = 50;
 const ONLINE_TTL   = 300; // seconds — 5 minutes
 
-let messages         = [];
-let msgIdCounter     = 0;
-let onlineSeen       = {}; // playerId → unix timestamp last seen
-let profiles         = {}; // playerId → { playerName, description, imageId }
-let translateCache   = {}; // "msgId:targetLang" → translatedText
+let messages      = [];
+let msgIdCounter  = 0;
+let onlineSeen    = {}; // playerId → unix timestamp last seen
+let profiles      = {}; // playerId → { playerName, description, imageId }
 
 function cleanOnline() {
     const cutoff = Math.floor(Date.now() / 1000) - ONLINE_TTL;
@@ -39,7 +38,7 @@ app.use((req, res, next) => {
 
 // ─── POST /api/chat/send ─────────────────────────────────────────────────────
 app.post("/api/chat/send", (req, res) => {
-    const { playerName, playerId, message, lang } = req.body || {};
+    const { playerName, playerId, message } = req.body || {};
 
     if (!playerName || !playerId || !message) {
         return res.json({ success: false, error: "missing fields" });
@@ -57,7 +56,6 @@ app.post("/api/chat/send", (req, res) => {
         playerName: String(playerName),
         playerId:   String(playerId),
         message:    String(message),
-        lang:       String(lang || "es"),
         timestamp:  now,
     });
 
@@ -88,84 +86,34 @@ app.post("/api/heartbeat", (req, res) => {
 });
 
 // ─── POST /api/translate ─────────────────────────────────────────────────────
-// Uses LibreTranslate public API. Language pair comes from the client —
-// no auto-detection needed. Results cached by "msgId:targetLang".
-// Falls back to a secondary server if the primary fails.
-const LIBRE_SERVERS = [
-    "https://libretranslate.com",
-    "https://translate.argosopentech.com",
-];
-
-async function translateText(text, from, to) {
-    for (const server of LIBRE_SERVERS) {
-        try {
-            const response = await fetch(`${server}/translate`, {
-                method:  "POST",
-                headers: { "Content-Type": "application/json" },
-                body:    JSON.stringify({ q: text, source: from, target: to, format: "text" }),
-                signal:  AbortSignal.timeout(8000),
-            });
-            const data = await response.json();
-            if (data?.translatedText) {
-                console.log(`[Translate] OK via ${server} (${from}→${to})`);
-                return data.translatedText;
-            }
-        } catch (err) {
-            console.warn(`[Translate] ${server} failed: ${err.message} — trying next`);
-        }
-    }
-    return null;
-}
-
 app.post("/api/translate", async (req, res) => {
-    const { text, from, to, msgId } = req.body || {};
+    const { text, to } = req.body || {};
 
-    if (!text || !from || !to) {
+    if (!text || !to) {
         return res.json({ success: false, error: "missing fields" });
     }
 
-    // Same language — nothing to do
-    if (from === to) {
-        return res.json({ success: false, error: "already in target language", from, to });
-    }
-
-    // Cache check
-    const cacheKey = msgId ? `${msgId}:${to}` : null;
-    if (cacheKey && translateCache[cacheKey]) {
-        console.log(`[Translate] Cache hit for ${cacheKey}`);
-        return res.json({
-            success:    true,
-            translated: translateCache[cacheKey].translated,
-            from:       from,
-            to:         to,
-            cached:     true,
-        });
-    }
-
     try {
-        const translated = await translateText(text, from, to);
+        const encoded  = encodeURIComponent(text);
+        const url      = `https://api.mymemory.translated.net/get?q=${encoded}&langpair=auto|${to}`;
+        const response = await fetch(url);
+        const data     = await response.json();
+
+        const translated = data?.responseData?.translatedText;
+        const from       = data?.matches?.[0]?.source_segment_language || "auto";
 
         if (!translated) {
-            return res.json({ success: false, error: "translation failed on all servers" });
+            return res.json({ success: false, error: "empty translation" });
         }
-
-        if (cacheKey) {
-            translateCache[cacheKey] = { translated, from };
-            console.log(`[Translate] Cached ${cacheKey} (${from}→${to})`);
-        }
-
-        console.log(`[Translate] ${from}→${to}: "${text.slice(0, 40)}" → "${translated.slice(0, 40)}"`);
 
         res.json({
             success:    true,
             translated: translated,
             from:       from,
             to:         to,
-            cached:     false,
         });
-
     } catch (err) {
-        console.warn("[Translate] Error:", err.message);
+        console.warn("[ChatGlobal] Translation error:", err.message);
         res.json({ success: false, error: err.message });
     }
 });
@@ -199,7 +147,84 @@ app.get("/api/profile/:playerId", (req, res) => {
     res.json({ success: true, profile });
 });
 
+// ─── BUILDER STORAGE ────────────────────────────────────────────────────────
+const MAX_PARTS  = 500;
+let builderParts = [];   // { id, shape, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, material, placedBy }
+let partIdCounter = 0;
+
+// ─── POST /api/builder/place ─────────────────────────────────────────────────
+app.post("/api/builder/place", (req, res) => {
+    const { shape, x, y, z, sx, sy, sz, rx, ry, rz, r, g, b, material, placedBy } = req.body || {};
+
+    if (x === undefined || y === undefined || z === undefined) {
+        return res.json({ success: false, error: "missing position" });
+    }
+
+    partIdCounter++;
+    const part = {
+        id:        partIdCounter,
+        shape:     String(shape     || "Part"),
+        x:         Number(x),
+        y:         Number(y),
+        z:         Number(z),
+        sx:        Number(sx        || 4),
+        sy:        Number(sy        || 1),
+        sz:        Number(sz        || 4),
+        rx:        Number(rx        || 0),
+        ry:        Number(ry        || 0),
+        rz:        Number(rz        || 0),
+        r:         Number(r         || 163),
+        g:         Number(g         || 162),
+        b:         Number(b         || 165),
+        material:  String(material  || "SmoothPlastic"),
+        placedBy:  String(placedBy  || "unknown"),
+        timestamp: Math.floor(Date.now() / 1000),
+    };
+
+    builderParts.push(part);
+
+    if (builderParts.length > MAX_PARTS) {
+        builderParts = builderParts.slice(builderParts.length - MAX_PARTS);
+    }
+
+    console.log(`[Builder] Part placed by ${part.placedBy} at (${part.x}, ${part.y}, ${part.z})`);
+    res.json({ success: true, id: part.id });
+});
+
+// ─── POST /api/builder/delete ────────────────────────────────────────────────
+app.post("/api/builder/delete", (req, res) => {
+    const { id } = req.body || {};
+
+    if (!id) return res.json({ success: false, error: "missing id" });
+
+    const before = builderParts.length;
+    builderParts = builderParts.filter(p => p.id !== Number(id));
+
+    if (builderParts.length < before) {
+        console.log(`[Builder] Part ${id} deleted`);
+        res.json({ success: true });
+    } else {
+        res.json({ success: false, error: "part not found" });
+    }
+});
+
+// ─── GET /api/builder/parts ──────────────────────────────────────────────────
+app.get("/api/builder/parts", (req, res) => {
+    res.json({ success: true, parts: builderParts });
+});
+
+// ─── POST /api/builder/clear ─────────────────────────────────────────────────
+// Limpia todas las partes (útil para empezar una sesión nueva)
+app.post("/api/builder/clear", (req, res) => {
+    const { confirm } = req.body || {};
+    if (confirm !== "yes") return res.json({ success: false, error: "send confirm: yes" });
+    builderParts = [];
+    console.log("[Builder] All parts cleared");
+    res.json({ success: true });
+});
+
 // ─── START ───────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`[ChatGlobal] Backend running on port ${PORT}`);
 });
+                              
