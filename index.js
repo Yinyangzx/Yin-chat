@@ -12,6 +12,7 @@ let messages      = [];
 let msgIdCounter  = 0;
 let onlineSeen    = {}; // playerId → unix timestamp last seen
 let profiles      = {}; // playerId → { playerName, description, imageId }
+let pendingKeys   = {}; // username → { key, generatedAt, ip } — set by LootLabs postback
 
 function cleanOnline() {
     const cutoff = Math.floor(Date.now() / 1000) - ONLINE_TTL;
@@ -221,6 +222,59 @@ app.post("/api/builder/clear", (req, res) => {
     builderParts = [];
     console.log("[Builder] All parts cleared");
     res.json({ success: true });
+});
+
+// ─── GET /api/key/postback ────────────────────────────────────────────────────
+// Called by LootLabs when user completes tasks.
+// Params: click_id (username), ip, unique_id
+app.get("/api/key/postback", (req, res) => {
+    const { click_id, ip, unique_id } = req.query;
+
+    if (!click_id) {
+        console.warn("[KeySystem] Postback received without click_id");
+        return res.sendStatus(400);
+    }
+
+    // Generate key: YY- + 12 random hex chars
+    const key = "YY-" + Array.from({ length: 12 }, () =>
+        Math.floor(Math.random() * 16).toString(16)
+    ).join("");
+
+    pendingKeys[String(click_id).toLowerCase()] = {
+        key,
+        generatedAt: Math.floor(Date.now() / 1000),
+        ip: ip || "unknown",
+    };
+
+    console.log(`[KeySystem] Key generated for "${click_id}" — ${key} (ip: ${ip})`);
+    res.sendStatus(200);
+});
+
+// ─── GET /api/key/claim ───────────────────────────────────────────────────────
+// Called by the Lua script after the user completes LootLabs.
+// Param: username
+app.get("/api/key/claim", (req, res) => {
+    const { username } = req.query;
+
+    if (!username) {
+        return res.json({ success: false, error: "missing username" });
+    }
+
+    const entry = pendingKeys[String(username).toLowerCase()];
+
+    if (!entry) {
+        return res.json({ success: false, error: "no key found — complete LootLabs first" });
+    }
+
+    // Key expires after 10 minutes if not claimed
+    const age = Math.floor(Date.now() / 1000) - entry.generatedAt;
+    if (age > 600) {
+        delete pendingKeys[String(username).toLowerCase()];
+        return res.json({ success: false, error: "key expired — complete LootLabs again" });
+    }
+
+    console.log(`[KeySystem] Key claimed by "${username}" — ${entry.key}`);
+    res.json({ success: true, key: entry.key });
 });
 
 // ─── START ───────────────────────────────────────────────────────────────────
