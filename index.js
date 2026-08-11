@@ -314,6 +314,155 @@ app.get("/api/key/validate", (req, res) => {
     });
 });
 
+// ─── GET /key ────────────────────────────────────────────────────────────────
+// Redirect destino de LootLabs. Muestra la key y la copia al portapapeles.
+// LootLabs redirect URL: https://yin-chat-production.up.railway.app/key?click_id={CLICK_ID}
+app.get("/key", (req, res) => {
+    const { click_id } = req.query;
+    if (!click_id) return res.send("<h2>Error: falta click_id</h2>");
+
+    const username = String(click_id).toLowerCase();
+
+    res.send(`<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tu Key — Yin Yang Beta</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0f0f13;
+    color: #e8e8f0;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .card {
+    background: #1a1a24;
+    border: 1px solid #2e2e42;
+    border-radius: 16px;
+    padding: 36px 32px;
+    max-width: 420px;
+    width: 100%;
+    text-align: center;
+  }
+  .logo { font-size: 32px; margin-bottom: 12px; }
+  h1 { font-size: 20px; margin-bottom: 6px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 28px; }
+  .key-box {
+    background: #0f0f13;
+    border: 1px solid #3a3a55;
+    border-radius: 10px;
+    padding: 14px 18px;
+    font-family: monospace;
+    font-size: 18px;
+    letter-spacing: 2px;
+    color: #a78bfa;
+    margin-bottom: 16px;
+    word-break: break-all;
+  }
+  .status {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 24px;
+    min-height: 20px;
+  }
+  .status.ok  { color: #4ade80; }
+  .status.err { color: #f87171; }
+  .btn {
+    display: inline-block;
+    padding: 12px 28px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    margin: 6px;
+    text-decoration: none;
+  }
+  .btn-copy   { background: #7c3aed; color: #fff; }
+  .btn-copy:hover { background: #6d28d9; }
+  .btn-dc     { background: #5865f2; color: #fff; }
+  .btn-dc:hover { background: #4752c4; }
+  .spinner { color: #a78bfa; margin-bottom: 8px; font-size: 22px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="logo">☯️</div>
+  <h1>Yin Yang Beta</h1>
+  <p class="sub">Tu key de acceso a los emotes</p>
+
+  <div class="spinner" id="spinner">⏳ Obteniendo tu key...</div>
+  <div class="key-box" id="keyBox" style="display:none">—</div>
+  <div class="status" id="status"></div>
+
+  <button class="btn btn-copy" id="copyBtn" style="display:none" onclick="copyKey()">📋 Copiar key</button>
+  <br>
+  <a class="btn btn-dc" href="https://discord.gg/TU_INVITE" target="_blank">💬 Ir al Discord</a>
+</div>
+
+<script>
+  let currentKey = "";
+
+  async function fetchKey(retries) {
+    try {
+      const r = await fetch("/api/key/claim?username=${username}");
+      const d = await r.json();
+      if (d.success && d.key) return d.key;
+    } catch(e) {}
+    if (retries > 0) {
+      await new Promise(r => setTimeout(r, 1500));
+      return fetchKey(retries - 1);
+    }
+    return null;
+  }
+
+  async function copyKey() {
+    try {
+      await navigator.clipboard.writeText(currentKey);
+      document.getElementById("status").textContent = "✅ Copiada al portapapeles";
+      document.getElementById("status").className = "status ok";
+    } catch(e) {
+      document.getElementById("status").textContent = "Copia manual: selecciona el texto de arriba";
+      document.getElementById("status").className = "status";
+    }
+  }
+
+  (async () => {
+    const key = await fetchKey(20); // intenta hasta ~30 segundos
+    document.getElementById("spinner").style.display = "none";
+
+    if (!key) {
+      document.getElementById("status").textContent = "❌ No se encontró tu key. Completá LootLabs primero.";
+      document.getElementById("status").className = "status err";
+      return;
+    }
+
+    currentKey = key;
+    document.getElementById("keyBox").textContent = key;
+    document.getElementById("keyBox").style.display = "block";
+    document.getElementById("copyBtn").style.display = "inline-block";
+
+    // Auto-copiar al llegar
+    try {
+      await navigator.clipboard.writeText(key);
+      document.getElementById("status").textContent = "✅ Key copiada automáticamente al portapapeles";
+      document.getElementById("status").className = "status ok";
+    } catch(e) {
+      document.getElementById("status").textContent = "Presioná el botón para copiarla.";
+    }
+  })();
+</script>
+</body>
+</html>`);
+});
+
 // ─── START ───────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`[ChatGlobal] Backend running on port ${PORT}`);
