@@ -315,13 +315,29 @@ app.get("/api/key/validate", (req, res) => {
 });
 
 // ─── GET /key ────────────────────────────────────────────────────────────────
-// Redirect destino de LootLabs. Muestra la key y la copia al portapapeles.
+// Redirect destino de LootLabs. Genera la key al llegar y la muestra al instante.
 // LootLabs redirect URL: https://yin-chat-production.up.railway.app/key?click_id={CLICK_ID}
 app.get("/key", (req, res) => {
     const { click_id } = req.query;
     if (!click_id) return res.send("<h2>Error: falta click_id</h2>");
 
     const username = String(click_id).toLowerCase();
+    const now      = Math.floor(Date.now() / 1000);
+
+    // Si ya tiene una key válida (no expirada), reutilizarla
+    let entry = pendingKeys[username];
+    if (!entry || (now - entry.generatedAt) > 86400) {
+        const key = "YY-" + Array.from({ length: 12 }, () =>
+            Math.floor(Math.random() * 16).toString(16)
+        ).join("");
+        entry = { key, generatedAt: now, ip: req.ip || "unknown" };
+        pendingKeys[username] = entry;
+        console.log(`[KeySystem] Key generada en /key para "${click_id}" — ${entry.key}`);
+    } else {
+        console.log(`[KeySystem] Key reutilizada en /key para "${click_id}" — ${entry.key}`);
+    }
+
+    const key = entry.key;
 
     res.send(`<!DOCTYPE html>
 <html lang="es">
@@ -410,19 +426,6 @@ app.get("/key", (req, res) => {
 <script>
   let currentKey = "";
 
-  async function fetchKey(retries) {
-    try {
-      const r = await fetch("/api/key/claim?username=${username}");
-      const d = await r.json();
-      if (d.success && d.key) return d.key;
-    } catch(e) {}
-    if (retries > 0) {
-      await new Promise(r => setTimeout(r, 1500));
-      return fetchKey(retries - 1);
-    }
-    return null;
-  }
-
   async function copyKey() {
     try {
       await navigator.clipboard.writeText(currentKey);
@@ -435,21 +438,13 @@ app.get("/key", (req, res) => {
   }
 
   (async () => {
-    const key = await fetchKey(20); // intenta hasta ~30 segundos
+    const key = "${key}";
     document.getElementById("spinner").style.display = "none";
-
-    if (!key) {
-      document.getElementById("status").textContent = "❌ No se encontró tu key. Completá LootLabs primero.";
-      document.getElementById("status").className = "status err";
-      return;
-    }
-
-    currentKey = key;
     document.getElementById("keyBox").textContent = key;
     document.getElementById("keyBox").style.display = "block";
     document.getElementById("copyBtn").style.display = "inline-block";
+    currentKey = key;
 
-    // Auto-copiar al llegar
     try {
       await navigator.clipboard.writeText(key);
       document.getElementById("status").textContent = "✅ Key copiada automáticamente al portapapeles";
