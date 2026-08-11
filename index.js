@@ -277,6 +277,43 @@ app.get("/api/key/claim", (req, res) => {
     res.json({ success: true, key: entry.key });
 });
 
+// ─── GET /api/key/validate ────────────────────────────────────────────────────
+// Called by the Lua script to validate if a stored key is still valid.
+// Params: username, key
+app.get("/api/key/validate", (req, res) => {
+    const { username, key } = req.query;
+
+    if (!username || !key) {
+        return res.json({ success: false, error: "missing username or key" });
+    }
+
+    const entry = pendingKeys[String(username).toLowerCase()];
+
+    if (!entry) {
+        return res.json({ success: false, error: "no pending key found — complete LootLabs first" });
+    }
+
+    // Key expires after 24 hours from generation
+    const age = Math.floor(Date.now() / 1000) - entry.generatedAt;
+    if (age > 86400) { // 86400 seconds = 24 hours
+        delete pendingKeys[String(username).toLowerCase()];
+        return res.json({ success: false, error: "key expired — complete LootLabs again" });
+    }
+
+    // Verify the key matches
+    if (entry.key !== String(key)) {
+        return res.json({ success: false, error: "invalid key" });
+    }
+
+    console.log(`[KeySystem] Key validated for "${username}" — valid for ${Math.floor((86400 - age) / 3600)} more hours`);
+    res.json({ 
+        success: true, 
+        key: entry.key,
+        expiresIn: 86400 - age, // seconds until expiration
+        expiresAt: entry.generatedAt + 86400 // unix timestamp of expiration
+    });
+});
+
 // ─── START ───────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
     console.log(`[ChatGlobal] Backend running on port ${PORT}`);
